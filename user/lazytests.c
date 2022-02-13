@@ -22,6 +22,7 @@ sparse_memory(char *s)
   }
   new_end = prev_end + REGION_SZ;
 
+  printf("page fault start");
   for (i = prev_end + PGSIZE; i < new_end; i += 64 * PGSIZE)
     *(char **)i = i;
 
