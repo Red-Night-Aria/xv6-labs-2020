@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -180,19 +182,21 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     panic("uvmunmap: not aligned");
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
-    if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
+    // if((pte = walk(pagetable, a, 0)) == 0)
+    //   panic("uvmunmap: walk");
     // if((*pte & PTE_V) == 0)
       // panic("uvmunmap: not mapped");
-    if ((*pte & PTE_V) != 0) {
-      if(PTE_FLAGS(*pte) == PTE_V)
-        panic("uvmunmap: not a leaf");
-      if(do_free){
-        uint64 pa = PTE2PA(*pte);
-        kfree((void*)pa);
+    if ((pte = walk(pagetable, a, 0)) != 0) {
+      if ((*pte & PTE_V) != 0) {
+        if(PTE_FLAGS(*pte) == PTE_V)
+          panic("uvmunmap: not a leaf");
+        if(do_free){
+          uint64 pa = PTE2PA(*pte);
+          kfree((void*)pa);
+        }
       }
+      *pte = 0;
     }
-    *pte = 0;
   }
 }
 
@@ -274,7 +278,7 @@ uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 // Recursively free page-table pages.
 // All leaf mappings must already have been removed.
 void
-freewalk(pagetable_t pagetable)
+freewalk(pagetable_t root_pagetable, pagetable_t pagetable)
 {
   // there are 2^9 = 512 PTEs in a page table.
   for(int i = 0; i < 512; i++){
@@ -282,9 +286,11 @@ freewalk(pagetable_t pagetable)
     if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){
       // this PTE points to a lower-level page table.
       uint64 child = PTE2PA(pte);
-      freewalk((pagetable_t)child);
+      freewalk(root_pagetable, (pagetable_t)child);
       pagetable[i] = 0;
     } else if(pte & PTE_V){
+      printf("invalid pte %d: %p\n", i, pte);
+      vmprint(root_pagetable);
       panic("freewalk: leaf");
     }
   }
@@ -298,7 +304,7 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 {
   if(sz > 0)
     uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 1);
-  freewalk(pagetable);
+  freewalk(pagetable, pagetable);
 }
 
 // Given a parent process's page table, copy
@@ -316,10 +322,15 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+    pte = walk(old, i, 0);
+    if ((pte == 0) ||
+        ((*pte & PTE_V) == 0)) {
+      continue;
+    }
+    // if((pte = walk(old, i, 0)) == 0)
+    //   panic("uvmcopy: pte should exist");
+    // if((*pte & PTE_V) == 0)
+    //   panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -333,6 +344,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   return 0;
 
  err:
+  printf("err happen");
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
 }
@@ -441,4 +453,36 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+void
+_helper_vmprint(pagetable_t pagetable, int level)
+{
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if ((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+      // this pte points to a valid lower level page table
+      uint64 child = PTE2PA(pte);
+      for (int j=0; j <= level; j++) {
+        printf("..");
+        if ((j+1) <= level) {
+          printf(" ");
+        }
+      }
+      printf("%d: pte %p pa %p\n", i, pte, child);
+      _helper_vmprint((pagetable_t)child, level+1);
+    }
+    else if (pte & PTE_V) {
+      uint64 child = PTE2PA(pte);
+      // the lowest valid page table
+      printf(".. .. ..%d: pte %p pa %p\n", i, pte, child);
+    }
+  }
+}
+   
+// print the page table
+void vmprint(pagetable_t pagetable)
+{
+  printf("page table %p\n", pagetable);
+  _helper_vmprint(pagetable, 0);
 }

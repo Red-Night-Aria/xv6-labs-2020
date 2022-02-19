@@ -115,12 +115,30 @@ printf(char *fmt, ...)
 }
 
 void
+backtrace(void)
+{
+  uint64 fp, ra, top, bottom;
+  printf("backtrace:\n");
+  fp = r_fp();  // frame pointer of currently executing function
+  top = PGROUNDUP(fp);
+  bottom = PGROUNDDOWN(fp);
+  while (fp < top && fp > bottom)
+  {
+    ra = *(uint64 *)(fp-8);
+    printf("%p\n", ra);
+    fp = *(uint64 *)(fp-16); // saved previous frame pointer
+  }
+}
+
+void
 panic(char *s)
 {
   pr.locking = 0;
   printf("panic: ");
   printf(s);
   printf("\n");
+  backtrace();
+  // vmprint(myproc()->pagetable);
   panicked = 1; // freeze uart output from other CPUs
   for(;;)
     ;
@@ -132,3 +150,4 @@ printfinit(void)
   initlock(&pr.lock, "pr");
   pr.locking = 1;
 }
+
